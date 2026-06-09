@@ -119,11 +119,20 @@ function addCalendarMonths(startDate, n) {
 // ── Core calculation ──────────────────────────────────────────────────────────
 
 function calculate(params) {
-  const { birthDate, cp, rtt, anc, extraHolidays, mode, nouveauConge } = params;
+  const { birthDate, cp, rtt, anc, extraHolidays, mode, nouveauConge, closurePeriods } = params;
   const year = birthDate.getFullYear();
   const hset = buildHolidaySet(year, extraHolidays);
 
   const result = { year, warnings: [], hset, periods: [], mode };
+
+  console.group('📅 Calcul calendrier');
+  console.log('━━ Paramètres ━━');
+  console.log('  Mode        :', mode);
+  console.log('  Naissance   :', fmt(birthDate));
+  console.log('  CP / RTT / ANC :', cp, '/', rtt, '/', anc);
+  console.log('  Nouveau congé :', nouveauConge, 'mois');
+  console.log('  Fermetures  :', (closurePeriods || []).map(p => `${fmt(p.start)}→${fmt(p.end)} (${p.label || ''})`).join(', ') || 'aucune');
+  console.log('  Fériés extra :', extraHolidays.map(d => fmt(d)).join(', ') || 'aucun');
 
   let lastCongeEnd;
 
@@ -133,6 +142,8 @@ function calculate(params) {
     const materEnd = addDays(birthDate, 69); // 10 × 7 = 70 jours, début inclus
     result.periods.push({ type: 'maternite', label: 'Congé maternité post-natal', start: materStart, end: materEnd, unit: '10 semaines cal.' });
     lastCongeEnd = materEnd;
+    console.log('━━ Maternité ━━');
+    console.log('  Maternité   :', fmt(materStart), '→', fmt(materEnd));
 
     if (materEnd >= new Date(year, 11, 31)) {
       result.warnings.push("Le congé maternité dépasse le 31 décembre. Les CP/RTT/ANC devront être reportés sur l'année suivante.");
@@ -156,98 +167,257 @@ function calculate(params) {
     result.periods.push({ type: 'pater-frac', label: 'Paternité fractionnable', start: paterFracStart, end: paterFracEnd, unit: '21 j calendaires' });
 
     lastCongeEnd = paterFracEnd;
+    console.log('━━ Congés obligatoires ━━');
+    console.log('  Congé naissance   :', fmt(nascStart), '→', fmt(nascEnd), '(3j ouvrables)');
+    console.log('  Pater. obligatoire:', fmt(paterObligStart), '→', fmt(paterObligEnd), '(4j cal)');
+    console.log('  Pater. frac.      :', fmt(paterFracStart), '→', fmt(paterFracEnd), '(21j cal)');
   }
 
-  // ── Nouveau congé de naissance — 1 ou 2 mois calendaires (optionnel)
+  const mandatoryLeaveEnd = lastCongeEnd;
+  console.log('  → Fin congés obligatoires :', fmt(mandatoryLeaveEnd));
+
+  // ── Optimisation : trouver la position du nouveau congé qui couvre le plus de fermeture ──
+  let ncStart = null, ncEnd = null;
   if (nouveauConge > 0) {
-    const ncStart = addDays(lastCongeEnd, 1);
-    const ncEnd = addCalendarMonths(ncStart, nouveauConge);
-    result.periods.push({
-      type: 'nouveau-conge',
-      label: `Nouveau congé de naissance (${nouveauConge} mois)`,
-      start: ncStart,
-      end: ncEnd,
-      unit: `${nouveauConge} mois cal.`,
-    });
-    lastCongeEnd = ncEnd;
+    const minNcStart = addDays(mandatoryLeaveEnd, 1);
+    ncStart = new Date(minNcStart);
+
+    if ((closurePeriods || []).length > 0) {
+      // Jours de fermeture ouvrés non couverts par les congés obligatoires
+      const coveredByMandatory = new Set();
+      result.periods.forEach(p => {
+        let cur = new Date(p.start);
+        while (cur <= p.end) { coveredByMandatory.add(dayKey(cur)); cur = addDays(cur, 1); }
+      });
+      const closureOuvreDates = [];
+      (closurePeriods || []).forEach(({ start, end }) => {
+        let cur = new Date(start);
+        while (cur <= end) {
+          if (isOuvre(cur, hset) && !coveredByMandatory.has(dayKey(cur)))
+            closureOuvreDates.push(new Date(cur));
+          cur = addDays(cur, 1);
+        }
+      });
+
+      if (closureOuvreDates.length > 0) {
+        let bestCovered = 0;
+        let candidate = new Date(minNcStart);
+        while (candidate <= new Date(year, 11, 31)) {
+          const candEnd = addCalendarMonths(candidate, nouveauConge);
+          let covered = 0;
+          for (const d of closureOuvreDates) {
+            if (d >= candidate && d <= candEnd) covered++;
+          }
+          if (covered > bestCovered) {
+            bestCovered = covered;
+            ncStart = new Date(candidate);
+          }
+          candidate = addDays(candidate, 1);
+        }
+        if (ncStart > minNcStart && bestCovered > 0) {
+          result.warnings.push(`✅ Nouveau congé décalé au ${fmt(ncStart)} : couvre ${bestCovered} j de fermeture obligatoire (économie : ${bestCovered} j CP).`);
+        }
+      }
+    }
+    ncEnd = addCalendarMonths(ncStart, nouveauConge);
+    console.log('━━ Nouveau congé ━━');
+    console.log('  Position       :', fmt(ncStart), '→', fmt(ncEnd));
+    console.log('  Décalé (optim) :', ncStart > addDays(mandatoryLeaveEnd, 1) ? 'OUI' : 'non');
   }
 
-  // ── Bloc CP + RTT + ANC — derniers jours ouvrés de l'année
+  // ── Fermeture — jours ouvrés non couverts par (obligatoires + nouveau congé) ──
+  const coveredByLeave = new Set();
+  result.periods.forEach(p => {
+    let cur = new Date(p.start);
+    while (cur <= p.end) { coveredByLeave.add(dayKey(cur)); cur = addDays(cur, 1); }
+  });
+  if (ncStart && ncEnd) {
+    let cur = new Date(ncStart);
+    while (cur <= ncEnd) { coveredByLeave.add(dayKey(cur)); cur = addDays(cur, 1); }
+  }
+
+  const fermetureKeys = new Set();
+  const fermetureSegments = [];
+  (closurePeriods || []).forEach(({ start, end, label }) => {
+    let segStart = null, segCount = 0;
+    let cur = new Date(start);
+    while (cur <= end) {
+      const free = isOuvre(cur, hset) && !coveredByLeave.has(dayKey(cur));
+      if (free) {
+        if (!segStart) segStart = new Date(cur);
+        fermetureKeys.add(dayKey(cur));
+        segCount++;
+      } else if (segStart) {
+        fermetureSegments.push({ type: 'fermeture', label: label || 'Fermeture', start: segStart, end: addDays(cur, -1), unit: `${segCount} j CP consommés` });
+        segStart = null; segCount = 0;
+      }
+      cur = addDays(cur, 1);
+    }
+    if (segStart) fermetureSegments.push({ type: 'fermeture', label: label || 'Fermeture', start: segStart, end: new Date(end), unit: `${segCount} j CP consommés` });
+  });
+
+  const fermetureCount = fermetureKeys.size;
+  console.log('━━ Fermetures ━━');
+  console.log('  Jours fermeture ouvrés non couverts :', fermetureCount);
+  if (fermetureSegments.length) fermetureSegments.forEach(s => console.log('  Segment:', fmt(s.start), '→', fmt(s.end), s.unit));
+
+  // ── Bloc CP + RTT + ANC ──
   const cpCount = Math.floor(cp);
-  const totalOuvre = cpCount + rtt + anc;
+  const cpAdjusted = Math.max(0, cpCount - fermetureCount);
+  const totalOuvre = cpAdjusted + rtt + anc;
+  console.log('━━ Bloc CP/RTT/ANC ━━');
+  console.log('  CP saisi / arrondi / ajusté :', cp, '/', cpCount, '/', cpAdjusted);
+  console.log('  RTT / ANC                   :', rtt, '/', anc);
+  console.log('  Total ouvrés à placer       :', totalOuvre);
 
   let cpEnd;
   if (totalOuvre > 0) {
-    // Point d'ancrage naturel : Nème dernier jour ouvré de l'année
-    const naturalBlocStart = nthLastOuvreOfYear(year, totalOuvre, hset);
+    // Jours nc toujours inclus dans effectiveHset : nthLastOuvreOfYear les saute
+    // → le bloc CP se cale automatiquement dans les ouvrés disponibles (avant ou après nc)
+    const nouveauCongeKeys = new Set();
+    if (ncStart && ncEnd) {
+      let cur = new Date(ncStart);
+      while (cur <= ncEnd) { nouveauCongeKeys.add(dayKey(cur)); cur = addDays(cur, 1); }
+    }
+    const effectiveHset = new Set([...hset, ...fermetureKeys, ...nouveauCongeKeys]);
 
-    // Si ce point tombe pendant ou avant la fin du dernier congé, on démarre juste après
+    const naturalBlocStart = nthLastOuvreOfYear(year, totalOuvre, effectiveHset);
+    console.log('  naturalBlocStart            :', fmt(naturalBlocStart));
+
     let blocStart = naturalBlocStart;
-    if (naturalBlocStart <= lastCongeEnd) {
-      blocStart = addDays(lastCongeEnd, 1);
-      while (!isOuvre(blocStart, hset)) blocStart = addDays(blocStart, 1);
+    if (naturalBlocStart <= mandatoryLeaveEnd) {
+      blocStart = addDays(mandatoryLeaveEnd, 1);
+      while (!isOuvre(blocStart, effectiveHset)) blocStart = addDays(blocStart, 1);
+    }
+    console.log('  blocStart                   :', fmt(blocStart));
+
+    // nc est "après le bloc CP" si ncStart > blocStart (CP d'abord, puis nc)
+    const ncIsAfterBloc = ncStart != null && ncStart > blocStart;
+    console.log('  ncIsAfterBloc               :', ncIsAfterBloc);
+
+    if (ncStart && !ncIsAfterBloc) {
+      // nc AVANT le bloc CP — travail de mandatoryLeaveEnd+1 à ncStart-1 si décalé
+      const preNcWorkStart = addDays(mandatoryLeaveEnd, 1);
+      const preNcWorkEnd = addDays(ncStart, -1);
+      if (preNcWorkStart <= preNcWorkEnd) {
+        let wdays = 0, wcur = new Date(preNcWorkStart);
+        while (wcur <= preNcWorkEnd) { if (isOuvre(wcur, hset)) wdays++; wcur = addDays(wcur, 1); }
+        if (wdays > 0) result.periods.push({ type: 'work', label: 'Retour au travail', start: preNcWorkStart, end: preNcWorkEnd, unit: `${wdays} j ouvrés travaillés` });
+      }
+      result.periods.push({ type: 'nouveau-conge', label: `Nouveau congé de naissance (${nouveauConge} mois)`, start: ncStart, end: ncEnd, unit: `${nouveauConge} mois cal.` });
     }
 
-    // Période de travail
-    const travailStart = addDays(lastCongeEnd, 1);
+    // Fermeture avant le bloc
+    fermetureSegments.forEach(s => { if (s.start < blocStart) result.periods.push(s); });
+
+    // Travail avant le bloc CP
+    // Si nc est avant CP : de ncEnd+1 à blocStart-1 ; sinon de mandatoryLeaveEnd+1 à blocStart-1
+    const travailStart = (ncStart && !ncIsAfterBloc) ? addDays(ncEnd, 1) : addDays(mandatoryLeaveEnd, 1);
     const travailEnd = addDays(blocStart, -1);
     if (travailStart <= travailEnd) {
       let wdays = 0, wcur = new Date(travailStart);
       while (wcur <= travailEnd) { if (isOuvre(wcur, hset)) wdays++; wcur = addDays(wcur, 1); }
-      result.periods.push({ type: 'work', label: 'Retour au travail', start: travailStart, end: travailEnd, unit: `${wdays} j ouvrés travaillés` });
+      if (wdays > 0) result.periods.push({ type: 'work', label: 'Retour au travail', start: travailStart, end: travailEnd, unit: `${wdays} j ouvrés travaillés` });
     }
 
-    // Breakdown : curseur avancé, on ne pousse que les périodes > 0 j
     let cur = blocStart;
-
     if (anc > 0) {
-      const ancEnd = addOuvreDays(cur, anc, hset);
+      const ancEnd = addOuvreDays(cur, anc, effectiveHset);
       result.periods.push({ type: 'anc', label: 'Ancienneté', start: cur, end: ancEnd, unit: `${anc} j ouvré${anc > 1 ? 's' : ''}` });
       cur = addDays(ancEnd, 1);
-      while (!isOuvre(cur, hset)) cur = addDays(cur, 1);
+      while (!isOuvre(cur, effectiveHset)) cur = addDays(cur, 1);
     }
-
     if (rtt > 0) {
-      const rttEnd = addOuvreDays(cur, rtt, hset);
+      const rttEnd = addOuvreDays(cur, rtt, effectiveHset);
       result.periods.push({ type: 'rtt', label: 'RTT', start: cur, end: rttEnd, unit: `${rtt} j ouvrés` });
       cur = addDays(rttEnd, 1);
-      while (!isOuvre(cur, hset)) cur = addDays(cur, 1);
+      while (!isOuvre(cur, effectiveHset)) cur = addDays(cur, 1);
     }
-
-    if (cpCount > 0) {
-      cpEnd = addOuvreDays(cur, cpCount, hset);
-      result.periods.push({ type: 'cp', label: 'Congés payés', start: cur, end: cpEnd, unit: `${cpCount} j ouvrés` });
-      if (cp % 1 !== 0) {
-        result.warnings.push(`${cp - cpCount} j CP restant à reporter sur l'année suivante.`);
-      }
-      // Avertir si des jours dépassent le 31 décembre
+    if (cpAdjusted > 0) {
+      cpEnd = addOuvreDays(cur, cpAdjusted, effectiveHset);
+      result.periods.push({ type: 'cp', label: 'Congés payés', start: cur, end: cpEnd, unit: `${cpAdjusted} j ouvrés` });
+      console.log('  CP                          :', fmt(cur), '→', fmt(cpEnd), `(${cpAdjusted}j)`);
+      if (cp % 1 !== 0) result.warnings.push(`${cp - cpCount} j CP restant à reporter sur l'année suivante.`);
       if (cpEnd > new Date(year, 11, 31)) {
         let daysJan = 0, w = new Date(year + 1, 0, 1);
         while (w <= cpEnd) { if (isOuvre(w, hset)) daysJan++; w = addDays(w, 1); }
-        result.warnings.push(`${daysJan} j de CP reportés en janvier ${year + 1} (congé précédent chevauchait la plage de fin d'année).`);
+        result.warnings.push(`${daysJan} j de CP reportés en janvier ${year + 1}.`);
       }
     }
+
+    // Fermeture après le bloc
+    fermetureSegments.forEach(s => { if (s.start >= blocStart) result.periods.push(s); });
+
+    // nc APRÈS le bloc CP
+    if (ncStart && ncIsAfterBloc) {
+      const gapStart = cpEnd ? addDays(cpEnd, 1) : addDays(mandatoryLeaveEnd, 1);
+      const gapEnd = addDays(ncStart, -1);
+      if (gapStart <= gapEnd) {
+        let gdays = 0, gc = new Date(gapStart);
+        while (gc <= gapEnd) { if (isOuvre(gc, hset)) gdays++; gc = addDays(gc, 1); }
+        if (gdays > 0) result.periods.push({ type: 'work', label: 'Retour au travail', start: gapStart, end: gapEnd, unit: `${gdays} j ouvrés travaillés` });
+      }
+      result.periods.push({ type: 'nouveau-conge', label: `Nouveau congé de naissance (${nouveauConge} mois)`, start: ncStart, end: ncEnd, unit: `${nouveauConge} mois cal.` });
+    }
+  } else {
+    // Pas de bloc CP/RTT/ANC
+    if (ncStart) {
+      result.periods.push({ type: 'nouveau-conge', label: `Nouveau congé de naissance (${nouveauConge} mois)`, start: ncStart, end: ncEnd, unit: `${nouveauConge} mois cal.` });
+    }
+    fermetureSegments.forEach(s => result.periods.push(s));
   }
 
-  // Reprise — premier jour ouvré après la fin du dernier congé
-  const reprBase = cpEnd ? addDays(cpEnd, 1) : addDays(lastCongeEnd, 1);
+  if (fermetureCount > 0) {
+    result.warnings.push(`${fermetureCount} j ouvrés de fermeture consomment du CP (non couverts par un autre congé).`);
+  }
+
+  // Reprise — premier jour ouvré après la fin du dernier congé (CP ou nouveau congé)
+  const finalEnd = [cpEnd, ncEnd].filter(Boolean).reduce((a, b) => (a > b ? a : b), mandatoryLeaveEnd);
+  const reprBase = addDays(finalEnd, 1);
   let reprCur = new Date(reprBase);
   while (!isOuvre(reprCur, hset)) reprCur = addDays(reprCur, 1);
   result.reprise = reprCur;
+
+  console.log('━━ Résumé final ━━');
+  const sorted = [...result.periods].sort((a, b) => a.start - b.start);
+  sorted.forEach(p => console.log(' ', p.type.padEnd(14), fmt(p.start), '→', fmt(p.end), ' ', p.unit));
+  console.log('  reprise'.padEnd(16), fmt(result.reprise));
+  if (result.warnings.length) console.log('  ⚠ warnings:', result.warnings);
+  console.groupEnd();
 
   result.dayMap = buildDayMap(result, hset);
   return result;
 }
 
-// CP, RTT, ANC are counted in ouvré days — weekends must not be colored
-const OUVRE_TYPES = new Set(['cp', 'rtt', 'anc']);
+// CP, RTT, ANC, fermeture are counted in ouvré days — weekends must not be colored
+const OUVRE_TYPES = new Set(['cp', 'rtt', 'anc', 'fermeture']);
 
 function buildDayMap(result, hset) {
   const map = new Map();
+
+  // Pour CP/RTT/ANC, les jours du nouveau congé (calendaire) ne doivent pas être colorés
+  // même si le calcul a étendu la période CP au-delà du début du nc
+  const ncBlockDays = new Set();
+  result.periods.forEach(p => {
+    if (p.type === 'nouveau-conge') {
+      let cur = new Date(p.start);
+      while (cur <= p.end) { ncBlockDays.add(dayKey(cur)); cur = addDays(cur, 1); }
+    }
+  });
+  const cpHset = ncBlockDays.size > 0 ? new Set([...hset, ...ncBlockDays]) : hset;
+
   result.periods.forEach(p => {
     let cur = new Date(p.start);
     while (cur <= p.end) {
-      if (!OUVRE_TYPES.has(p.type) || isOuvre(cur, hset)) {
+      let ok;
+      if (!OUVRE_TYPES.has(p.type)) {
+        ok = true; // types calendaires : tous les jours
+      } else if (p.type === 'fermeture') {
+        ok = isOuvre(cur, hset); // fermeture : hset de base
+      } else {
+        ok = isOuvre(cur, cpHset); // cp/rtt/anc : exclure les jours nc
+      }
+      if (ok) {
         const k = dayKey(cur);
         if (!map.has(k)) map.set(k, { type: p.type, label: p.label });
       }
@@ -260,6 +430,7 @@ function buildDayMap(result, hset) {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 const TYPE_COLORS = {
+  fermeture:       '#FF9E9E',
   'nouveau-conge': '#AEE1E1',
   naissance:   '#FFD966',
   'pater-oblig': '#F4A460',
@@ -274,6 +445,7 @@ const TYPE_COLORS = {
 };
 
 const TYPE_CSS = {
+  fermeture:       'c-fermeture',
   'nouveau-conge': 'c-nouveau-conge',
   naissance:   'c-naissance',
   'pater-oblig': 'c-pater-oblig',
@@ -288,6 +460,7 @@ const TYPE_CSS = {
 };
 
 const SHORT_LABELS = {
+  fermeture:       'Fermeture',
   'nouveau-conge': 'Nouv. congé',
   naissance: 'Congé naissance',
   'pater-oblig': 'Pater. oblig.',
@@ -335,7 +508,10 @@ function renderLegend(mode, result) {
   const ncEntry = result.periods.some(p => p.type === 'nouveau-conge')
     ? [{ type: 'nouveau-conge', label: 'Nouveau congé de naissance' }]
     : [];
-  const items = [...specific, ...ncEntry, ...LEGEND_COMMON];
+  const ftEntry = result.periods.some(p => p.type === 'fermeture')
+    ? [{ type: 'fermeture', label: 'Fermeture (CP obligatoire)' }]
+    : [];
+  const items = [...specific, ...ncEntry, ...ftEntry, ...LEGEND_COMMON];
   const container = document.getElementById('legend');
   container.innerHTML = items.map(({ type, label }) => {
     const color = TYPE_COLORS[type];
@@ -421,7 +597,8 @@ function renderCalendar(result, birthDate) {
 function renderSummary(result) {
   const tbody = document.querySelector('#summary-table tbody');
   tbody.innerHTML = '';
-  result.periods.forEach(p => {
+  const sorted = [...result.periods].sort((a, b) => a.start - b.start);
+  sorted.forEach(p => {
     const tr = document.createElement('tr');
     const color = TYPE_COLORS[p.type] || '#fff';
     tr.innerHTML = `
@@ -442,8 +619,9 @@ function renderWarnings(result) {
   el.innerHTML = '';
   result.warnings.forEach(w => {
     const d = document.createElement('div');
-    d.className = 'warning';
-    d.textContent = '⚠️ ' + w;
+    const isInfo = w.startsWith('✅');
+    d.className = isInfo ? 'warning warning-info' : 'warning';
+    d.textContent = isInfo ? w : '⚠️ ' + w;
     el.appendChild(d);
   });
 }
@@ -451,6 +629,25 @@ function renderWarnings(result) {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 let currentResult = null;
+let closurePeriods = [];
+
+function renderFermetureTags() {
+  const container = document.getElementById('fermeture-tags');
+  container.innerHTML = '';
+  closurePeriods.forEach((p, i) => {
+    const tag = document.createElement('span');
+    tag.className = 'ferie-tag';
+    const lbl = p.label ? ` — ${p.label}` : '';
+    tag.innerHTML = `${fmtShort(p.start)} → ${fmtShort(p.end)}${lbl} <button onclick="removeClosurePeriod(${i})" title="Supprimer">×</button>`;
+    container.appendChild(tag);
+  });
+}
+
+function removeClosurePeriod(i) {
+  closurePeriods.splice(i, 1);
+  renderFermetureTags();
+}
+
 let extraHolidayDates = [
   new Date(new Date().getFullYear(), 10, 11),
   new Date(new Date().getFullYear(), 11, 24),
@@ -472,6 +669,21 @@ function removeHoliday(i) {
   extraHolidayDates.splice(i, 1);
   renderExtraHolidays();
 }
+
+document.getElementById('btn-add-fermeture').addEventListener('click', () => {
+  const startVal = document.getElementById('fermeture-start').value;
+  const endVal   = document.getElementById('fermeture-end').value;
+  if (!startVal || !endVal) return;
+  const start = new Date(startVal + 'T00:00:00');
+  const end   = new Date(endVal   + 'T00:00:00');
+  if (isNaN(start) || isNaN(end) || end < start) return;
+  const label = document.getElementById('fermeture-label').value.trim();
+  closurePeriods.push({ start, end, label });
+  renderFermetureTags();
+  document.getElementById('fermeture-start').value = '';
+  document.getElementById('fermeture-end').value   = '';
+  document.getElementById('fermeture-label').value  = '';
+});
 
 document.getElementById('btn-add-ferie').addEventListener('click', () => {
   const val = document.getElementById('ferie-input').value;
@@ -500,8 +712,13 @@ document.getElementById('btn-calc').addEventListener('click', () => {
 
   const yr = birthDate.getFullYear();
   const adjusted = extraHolidayDates.map(d => new Date(yr, d.getMonth(), d.getDate()));
+  const syncedClosures = closurePeriods.map(p => ({
+    start: new Date(yr, p.start.getMonth(), p.start.getDate()),
+    end:   new Date(yr, p.end.getMonth(),   p.end.getDate()),
+    label: p.label,
+  }));
 
-  currentResult = calculate({ birthDate, cp, rtt, anc, extraHolidays: adjusted, mode, nouveauConge });
+  currentResult = calculate({ birthDate, cp, rtt, anc, extraHolidays: adjusted, mode, nouveauConge, closurePeriods: syncedClosures });
 
   renderWarnings(currentResult);
   renderSummary(currentResult);
@@ -512,4 +729,7 @@ document.getElementById('btn-calc').addEventListener('click', () => {
   document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
 });
 
-document.addEventListener('DOMContentLoaded', renderExtraHolidays);
+document.addEventListener('DOMContentLoaded', () => {
+  renderExtraHolidays();
+  renderFermetureTags();
+});

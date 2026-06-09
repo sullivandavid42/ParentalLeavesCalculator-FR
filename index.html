@@ -81,6 +81,18 @@
         </div>
       </div>
 
+      <div class="field" style="grid-column: 1 / -1">
+        <label>Périodes de fermeture obligatoire (CP consommés)</label>
+        <div id="fermeture-tags" class="feries-extra" style="margin-bottom:8px"></div>
+        <div class="add-fermeture">
+          <input type="date" id="fermeture-start">
+          <span style="font-size:0.85rem;color:#666;align-self:center">au</span>
+          <input type="date" id="fermeture-end">
+          <input type="text" id="fermeture-label" placeholder="Libellé (ex : Noël)" style="flex:1;min-width:120px">
+          <button class="btn-add" id="btn-add-fermeture">+ Ajouter</button>
+        </div>
+      </div>
+
     </div>
     <button class="btn-calc" id="btn-calc">Calculer le calendrier</button>
   </div>

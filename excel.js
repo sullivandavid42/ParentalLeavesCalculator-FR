@@ -1,6 +1,7 @@
 // Excel export via SheetJS
 
 const EXCEL_COLORS = {
+  fermeture:     'FF9E9E',
   naissance:     'FFD966',
   'pater-oblig': 'F4A460',
   'pater-frac':  'FFB347',
@@ -251,6 +252,7 @@ function buildSheet3(result) {
     ['Paternité fractionnable', 'FFB347'],
     ['Congé maternité post-natal', 'FFB6C1'],
     ['Nouveau congé de naissance', 'AEE1E1'],
+    ['Fermeture (CP obligatoire)', 'FF9E9E'],
     ['Congés payés', '90EE90'],
     ['RTT', '98FB98'],
     ['Ancienneté', 'DDA0DD'],
