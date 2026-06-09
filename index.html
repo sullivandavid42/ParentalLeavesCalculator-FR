@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Calendrier Prévisionnel Congés Naissance</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1>Calendrier Prévisionnel — Congés Naissance</h1>
+  <p>Planifiez vos congés de naissance et paternité en quelques clics</p>
+</header>
+
+<main>
+
+  <!-- Params -->
+  <div class="card">
+    <h2>Paramètres</h2>
+    <div class="params-grid">
+
+      <div class="field" style="grid-column: 1 / -1">
+        <label>Mode de calcul</label>
+        <div class="toggle-group">
+          <label class="toggle-option">
+            <input type="radio" name="mode" value="pater" checked>
+            <span>Paternité</span>
+          </label>
+          <label class="toggle-option">
+            <input type="radio" name="mode" value="mater">
+            <span>Maternité post-natal</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field" style="grid-column: 1 / -1">
+        <label>Nouveau congé de naissance (en plus)</label>
+        <div class="toggle-group">
+          <label class="toggle-option">
+            <input type="radio" name="nouveau-conge" value="0" checked>
+            <span>Non</span>
+          </label>
+          <label class="toggle-option">
+            <input type="radio" name="nouveau-conge" value="1">
+            <span>1 mois</span>
+          </label>
+          <label class="toggle-option">
+            <input type="radio" name="nouveau-conge" value="2">
+            <span>2 mois</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field" style="grid-column: 1 / -1">
+        <label>Date de naissance prévue</label>
+        <input type="date" id="birth-date" value="2026-08-13">
+      </div>
+
+      <div class="field">
+        <label>Congés payés (CP)</label>
+        <input type="number" id="cp" value="20.5" min="0" step="0.5">
+      </div>
+      <div class="field">
+        <label>RTT</label>
+        <input type="number" id="rtt" value="7" min="0" step="1">
+      </div>
+      <div class="field">
+        <label>Congé ancienneté</label>
+        <input type="number" id="anc" value="1" min="0" step="1">
+      </div>
+
+      <div class="field" style="grid-column: 1 / -1">
+        <label>Jours fériés entreprise supplémentaires</label>
+        <div class="feries-extra">
+          <div id="feries-tags"></div>
+        </div>
+        <div class="add-ferie" style="margin-top:8px">
+          <input type="date" id="ferie-input" placeholder="JJ/MM/AAAA">
+          <button class="btn-add" id="btn-add-ferie">+ Ajouter</button>
+        </div>
+      </div>
+
+    </div>
+    <button class="btn-calc" id="btn-calc">Calculer le calendrier</button>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+
+    <div id="warnings"></div>
+
+    <!-- Summary -->
+    <div class="card">
+      <h2>Résumé des périodes</h2>
+      <table class="summary-table" id="summary-table">
+        <thead>
+          <tr>
+            <th>Type de congé</th>
+            <th>Durée</th>
+            <th>Début</th>
+            <th>Fin</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Calendar -->
+    <div class="card">
+      <h2>Calendrier visuel</h2>
+      <div id="calendar-months" class="calendar-months"></div>
+
+      <!-- Legend (rendered dynamically by renderLegend()) -->
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <!-- Excel download -->
+    <div class="card" style="text-align:center">
+      <button class="btn-excel" id="btn-excel" style="margin:0 auto">
+        <span>&#x1F4E5;</span> Télécharger le calendrier Excel
+      </button>
+    </div>
+
+  </div>
+</main>
+
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+<script src="excel.js"></script>
+<script>
+  document.getElementById('btn-excel').addEventListener('click', () => {
+    if (!currentResult) { alert('Calculez d\'abord le calendrier.'); return; }
+    const birthStr = document.getElementById('birth-date').value;
+    exportExcel(currentResult, new Date(birthStr + 'T00:00:00'));
+  });
+</script>
+</body>
+</html>
